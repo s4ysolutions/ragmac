@@ -5,7 +5,7 @@ on:
     tags: ['v*']
 
 jobs:
-  build-arm64:
+  build:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -14,55 +14,30 @@ jobs:
         with:
           swift-version: "6.1"
 
-      - name: Build (arm64)
+      - name: Build
         run: swift build -c release --arch arm64
 
       - name: Package
         run: |
           mkdir -p dist
           cp .build/release/ragmac dist/
-          tar -czf ragmac-arm64.tar.gz -C dist ragmac
+          tar -czf ragmac.tar.gz -C dist ragmac
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ragmac-arm64
-          path: ragmac-arm64.tar.gz
-
-  build-x86_64:
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.1"
-
-      - name: Build (x86_64)
-        run: swift build -c release --arch x86_64
-
-      - name: Package
-        run: |
-          mkdir -p dist
-          cp .build/release/ragmac dist/
-          tar -czf ragmac-x86_64.tar.gz -C dist ragmac
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ragmac-x86_64
-          path: ragmac-x86_64.tar.gz
+          name: ragmac
+          path: ragmac.tar.gz
 
   release:
-    needs: [build-arm64, build-x86_64]
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: ragmac-*
-          merge-multiple: false
+          name: ragmac
 
       - name: Create release and upload assets
         env:
@@ -71,5 +46,4 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
-            ragmac-arm64/ragmac-arm64.tar.gz \
-            ragmac-x86_64/ragmac-x86_64.tar.gz
+            ragmac.tar.gz
