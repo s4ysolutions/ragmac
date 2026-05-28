@@ -1,0 +1,9 @@
+.DS_Store
+.build/
+*.o
+*.d
+Package.resolved
+.swiftpm/
+.ragmac/
+.idea/
+*.iml

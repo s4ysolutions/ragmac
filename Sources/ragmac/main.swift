@@ -1,0 +1,3 @@
+import ragmacCore
+
+RootCommand.main()

@@ -1,0 +1,64 @@
+RAGMAC: Retrieval-Augmented Generation for macOS
+=================================================
+
+Overview
+--------
+ragmac is a command-line RAG tool that indexes local documents, generates
+embeddings, and enables semantic search over your files. It runs entirely
+on your Mac with zero external dependencies at runtime.
+
+Architecture
+------------
+The tool uses Apple's NaturalLanguage framework for embeddings by default,
+but can also load CoreML models from HuggingFace for higher-quality results.
+Documents are chunked into ~512-token segments with 10% overlap between
+adjacent chunks. Each chunk is embedded and stored in a SQLite database
+using the sqlite-vec extension for vector similarity search.
+
+Key Features
+------------
+- Native macOS: no Python, Node, or Docker required
+- Multiple embedding sources: NLEmbedding, HuggingFace CoreML, local models
+- Six file formats supported: TXT, MD, HTML, PDF, EPUB, DOCX
+- MCP server for Claude and other AI agent integration
+- Per-corpus vector tables ensure clean model separation
+- Cosine similarity scoring for search results
+
+Getting Started
+---------------
+1. Build with Swift 6.1: swift build -c release
+2. Create a corpus: ragmac corpus create mydocs
+3. Index documents: ragmac index add ~/Documents/ --corpus mydocs
+4. Search: ragmac search "your query" --corpus mydocs
+
+Embedding Models
+----------------
+The default NLEmbedding model uses 512-dimensional vectors and performs
+word-averaging. For better semantic understanding, use a HuggingFace
+CoreML model like BAAI/bge-small-en-v1.5-coreml which produces 384-
+dimensional embeddings with superior retrieval quality.
+
+Search Behavior
+---------------
+By default, search operates on a single corpus. The --corpus all flag
+enables cross-corpus search. When all corpora share the same embedding
+model, results are globally ranked by cosine similarity. When models
+differ, results are grouped by corpus since distance comparisons
+across vector spaces are not meaningful.
+
+MCP Integration
+---------------
+The MCP server exposes three read-only tools to AI agents:
+- list_corpora: Discover available knowledge bases
+- search: Semantic search with configurable top-k results
+- list_files: Inspect corpus contents
+
+Add ragnac to your Claude Code configuration and the agent will
+automatically discover and search your indexed documents.
+
+Performance Notes
+----------------
+- First run downloads sqlite-vec dylib (~1MB), cached for later use
+- HuggingFace model downloads are one-time, cached in ~/.ragmac/models/
+- Indexing speed depends on model choice; native is fastest
+- Database size scales with document count and chunk count
