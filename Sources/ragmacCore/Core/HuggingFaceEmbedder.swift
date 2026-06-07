@@ -67,25 +67,31 @@ public final class HuggingFaceEmbedder: Embedder, @unchecked Sendable {
     private static func selectFiles(from siblings: [HFMetadata.Sibling]) -> [String] {
         let filenames = siblings.map { $0.rfilename }
 
-        // Prefer .mlpackage (directory bundle stored as multiple files with common prefix)
-        let pkgPrefixes = Set(filenames
-            .filter { $0.hasSuffix(".mlpackage") || $0.contains(".mlpackage/") }
-            .compactMap { $0.components(separatedBy: "/").first }
-            .filter { $0.hasSuffix(".mlpackage") })
+        // Extract prefix up to and including the .mlpackage directory component.
+        // Handles both "foo.mlpackage/..." and "nested/path/foo.mlpackage/..."
+        let pkgPrefixes = Set(filenames.compactMap { (filename: String) -> String? in
+            let parts = filename.components(separatedBy: "/")
+            guard let idx = parts.firstIndex(where: { $0.hasSuffix(".mlpackage") }) else { return nil }
+            return parts[...idx].joined(separator: "/")
+        })
 
         var selected: [String] = []
-        if let pkgName = pkgPrefixes.first {
-            selected = filenames.filter { $0.hasPrefix(pkgName) }
+        // Sort to make selection deterministic; prefer smallest (shortest seq len) package
+        if let pkgPrefix = pkgPrefixes.sorted().first {
+            selected = filenames.filter { $0.hasPrefix(pkgPrefix + "/") || $0 == pkgPrefix }
         } else if let mdl = filenames.first(where: { $0.hasSuffix(".mlmodel") }) {
             selected = [mdl]
         }
 
-        // Also grab tokenizer support files if present
-        let support = ["vocab.txt", "tokenizer_config.json", "special_tokens_map.json"]
-        for s in support {
-            if filenames.contains(s) && !selected.contains(s) {
-                selected.append(s)
-            }
+        // Grab top-level BERT support files or tokenizer/ subdirectory
+        let bertFiles = ["vocab.txt", "tokenizer_config.json", "special_tokens_map.json"]
+        for s in bertFiles where filenames.contains(s) && !selected.contains(s) {
+            selected.append(s)
+        }
+        // BPE / Qwen-style tokenizer lives in tokenizer/ subdir
+        let tokenizerFiles = filenames.filter { $0.hasPrefix("tokenizer/") }
+        for s in tokenizerFiles where !selected.contains(s) {
+            selected.append(s)
         }
         return selected
     }

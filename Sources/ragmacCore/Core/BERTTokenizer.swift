@@ -1,8 +1,13 @@
 import Foundation
 
+/// Common interface for tokenizers used by CoreMLEmbedder.
+public protocol TextTokenizer: Sendable {
+    func encode(_ text: String) -> (inputIds: [Int32], attentionMask: [Int32])
+}
+
 /// Minimal BERT WordPiece tokenizer for CoreML embedding models.
 /// Expects vocab.txt in the model directory (one token per line).
-public final class BERTTokenizer: Sendable {
+public final class BERTTokenizer: TextTokenizer, Sendable {
     private let vocab: [String: Int]
     private let unkId: Int
     private let clsId: Int

@@ -254,39 +254,36 @@ The model is set **once at corpus-create time** and cannot be changed afterward.
 | `hf:<repo-id>` | HuggingFace Hub | Must have `coreml` tag; downloaded on first use |
 | `local:<path>` | Local `.mlpackage` or `.mlmodel` | Path is resolved at index time |
 
-### Choosing a Model
+### Option 1: Native — English only, no download
 
-- **`native`** — good for quick setup and prototyping. Uses word averaging, so semantically different sentences can score similarly. No download required.
-- **`hf:` models** — better retrieval quality. Run on the Apple Neural Engine. Recommended when retrieval accuracy matters.
+Uses macOS `NLEmbedding`. No download, no disk space, instant setup. Word-averaging model — semantically different sentences can score similarly. Good for English-only content and quick prototyping.
 
-Popular CoreML models on HuggingFace:
+```bash
+ragmac corpus create mydocs --description "My docs"
+ragmac index add ./docs/ --corpus mydocs
+ragmac search "query" --corpus mydocs
+```
 
-| Repo ID | Dims | Size | Notes |
-|---------|------|------|-------|
-| `BAAI/bge-small-en-v1.5-coreml` | 384 | ~25MB | Good balance of speed and quality |
-| `BAAI/bge-large-en-v1.5-coreml` | 1024 | ~130MB | Higher quality, slower |
-| `sentence-transformers/all-MiniLM-L6-v2-coreml` | 384 | ~25MB | General-purpose, fast |
+### Option 2: Qwen3 — multilingual, Neural Engine
 
-To find more, search HuggingFace with the `coreml` tag: `https://huggingface.co/models?library=coreml`.
+`neuradex/Qwen3-Embedding-0.6B-CoreML-ANE` supports Serbian, Russian, English, and 100+ other languages. Runs on the Apple Neural Engine. Downloaded once on first use (~400MB).
+
+```bash
+ragmac corpus create mydocs \
+  --description "My docs" \
+  --model hf:neuradex/Qwen3-Embedding-0.6B-CoreML-ANE
+
+ragmac index add ./docs/ --corpus mydocs
+ragmac search "query" --corpus mydocs
+```
+
+The first `corpus create` downloads the model and tokenizer to `~/.ragmac/models/`. Subsequent corpora using the same model ID reuse the cache.
 
 ### HuggingFace Models
 
 ragmac verifies the model has a `coreml` tag before downloading. Models without this tag are rejected — not all transformer models convert cleanly to CoreML.
 
-On first use, the model is downloaded to `~/.ragmac/models/<repo-id>/`. Subsequent uses of the same repo ID use the cached copy.
-
-```bash
-# Create a corpus with a HuggingFace CoreML model
-ragmac corpus create bgedocs --model hf:BAAI/bge-small-en-v1.5-coreml --description "BGE-indexed docs"
-
-# Index files — same as with native model
-ragmac index add ./docs/ --corpus bgedocs
-
-# Search
-ragmac search "vector similarity" --corpus bgedocs
-```
-
-The first `corpus create` call downloads the model (~25MB for bge-small). Subsequent calls to any corpus using the same repo ID reuse the cache.
+To find other models, search HuggingFace with the `coreml` tag: `https://huggingface.co/models?library=coreml`.
 
 ### Local Models
 
@@ -297,23 +294,6 @@ ragmac corpus create localdocs --model local:~/models/my-embedder.mlpackage
 ```
 
 The path is resolved at corpus create time. If the file moves or is deleted, indexing new files into that corpus will fail.
-
-### Comparing Model Quality
-
-```bash
-# Create two corpora with different models over the same files
-ragmac corpus create native-idx --model native
-ragmac corpus create bge-idx    --model hf:BAAI/bge-small-en-v1.5-coreml
-
-ragmac index add ./docs/ --corpus native-idx
-ragmac index add ./docs/ --corpus bge-idx
-
-# Run the same query against both
-ragmac search "your query" --corpus native-idx
-ragmac search "your query" --corpus bge-idx
-```
-
-Cross-corpus search (`--corpus all`) groups results by corpus when models differ, so you can compare rankings directly.
 
 ## Supported File Types
 

@@ -9,38 +9,41 @@ public final class CoreMLEmbedder: Embedder, @unchecked Sendable {
     public let source: ModelSource
 
     private let model: MLModel
-    private let tokenizer: BERTTokenizer?
+    private let tokenizer: (any TextTokenizer)?
     private let inputIdsFeature: String
     private let attentionMaskFeature: String
     private let outputFeature: String
+    private let requiredSeqLen: Int?  // non-nil when model has fixed input length
 
     /// Initializes from a compiled .mlmodelc URL or a .mlpackage/.mlmodel that will be compiled.
     public init(modelDir: URL, modelSource: ModelSource, identifier: String) throws {
         self.source = modelSource
         self.identifier = identifier
 
-        // Find the .mlpackage or .mlmodel
+        // Find the .mlpackage or .mlmodel (search top level + one subdirectory level)
         let fm = FileManager.default
-        let contents = (try? fm.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)) ?? []
 
-        let modelURL: URL
-        if let pkg = contents.first(where: { $0.pathExtension == "mlpackage" }) {
-            modelURL = pkg
-        } else if let mdl = contents.first(where: { $0.pathExtension == "mlmodel" }) {
-            modelURL = mdl
-        } else if let mlmodelc = contents.first(where: { $0.pathExtension == "mlmodelc" }) {
-            modelURL = mlmodelc
-        } else {
+        guard let modelURL = CoreMLEmbedder.findModelURL(in: modelDir, fm: fm) else {
             throw RagmacError.modelLoadFailed(reason: "No .mlpackage, .mlmodel, or .mlmodelc found in \(modelDir.path)")
         }
 
+        // Compile .mlpackage/.mlmodel → .mlmodelc, caching next to the source file
         let compiledURL: URL
         if modelURL.pathExtension == "mlmodelc" {
             compiledURL = modelURL
         } else {
-            compiledURL = try MLModel.compileModel(at: modelURL)
+            let cacheURL = modelURL.deletingPathExtension().appendingPathExtension("mlmodelc")
+            if fm.fileExists(atPath: cacheURL.path) {
+                compiledURL = cacheURL
+            } else {
+                fputs("→ Compiling model (first run, may take a minute)...\n", stderr)
+                let tmp = try MLModel.compileModel(at: modelURL)
+                try fm.moveItem(at: tmp, to: cacheURL)
+                compiledURL = cacheURL
+            }
         }
 
+        fputs("→ Loading model...\n", stderr)
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
         self.model = try MLModel(contentsOf: compiledURL, configuration: config)
@@ -71,13 +74,43 @@ public final class CoreMLEmbedder: Embedder, @unchecked Sendable {
             self.dimensions = 384
         }
 
-        // Load tokenizer if vocab.txt exists
+        // Detect fixed sequence length from input shape constraint (e.g. b1_s128 → 128)
+        if let inDesc = model.modelDescription.inputDescriptionsByName[self.inputIdsFeature],
+           inDesc.type == .multiArray,
+           let constraint = inDesc.multiArrayConstraint,
+           !constraint.shape.isEmpty,
+           constraint.shape.count >= 2 {
+            let seqDim = constraint.shape[1].intValue
+            self.requiredSeqLen = seqDim > 0 ? seqDim : nil
+        } else {
+            self.requiredSeqLen = nil
+        }
+
+        // Load tokenizer: BPE (tokenizer/tokenizer.json) or BERT (vocab.txt)
+        let bpeURL = modelDir.appendingPathComponent("tokenizer").appendingPathComponent("tokenizer.json")
         let vocabURL = modelDir.appendingPathComponent("vocab.txt")
-        if fm.fileExists(atPath: vocabURL.path) {
+        let tokMaxLen = self.requiredSeqLen ?? 512
+        if fm.fileExists(atPath: bpeURL.path) {
+            self.tokenizer = try BPETokenizer(tokenizerDir: modelDir.appendingPathComponent("tokenizer"), maxLength: tokMaxLen)
+        } else if fm.fileExists(atPath: vocabURL.path) {
             self.tokenizer = try BERTTokenizer(vocabURL: vocabURL)
         } else {
             self.tokenizer = nil
         }
+    }
+
+    /// Searches `dir` then its direct subdirectories (non-bundle) for a CoreML model.
+    private static func findModelURL(in dir: URL, fm: FileManager) -> URL? {
+        let modelExts = ["mlpackage", "mlmodel", "mlmodelc"]
+        let top = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        if let found = top.first(where: { modelExts.contains($0.pathExtension) }) { return found }
+        for sub in top where !modelExts.contains(sub.pathExtension) {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: sub.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            let subContents = (try? fm.contentsOfDirectory(at: sub, includingPropertiesForKeys: nil)) ?? []
+            if let found = subContents.first(where: { modelExts.contains($0.pathExtension) }) { return found }
+        }
+        return nil
     }
 
     public func embed(_ text: String) async throws -> [Float] {
@@ -87,9 +120,21 @@ public final class CoreMLEmbedder: Embedder, @unchecked Sendable {
             )
         }
 
-        let (inputIds, attentionMask) = tokenizer.encode(text)
-        let seqLen = inputIds.count
+        var (inputIds, attentionMask) = tokenizer.encode(text)
 
+        // Pad to fixed sequence length if the model requires it
+        if let seqLen = requiredSeqLen {
+            if inputIds.count < seqLen {
+                let pad = seqLen - inputIds.count
+                inputIds += [Int32](repeating: 0, count: pad)
+                attentionMask += [Int32](repeating: 0, count: pad)
+            } else {
+                inputIds = Array(inputIds.prefix(seqLen))
+                attentionMask = Array(attentionMask.prefix(seqLen))
+            }
+        }
+
+        let seqLen = inputIds.count
         let idsArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .int32)
         let maskArray = try MLMultiArray(shape: [1, NSNumber(value: seqLen)], dataType: .int32)
 
