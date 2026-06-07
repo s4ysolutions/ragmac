@@ -244,16 +244,76 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ## Embedding Models
 
+The model is set **once at corpus-create time** and cannot be changed afterward. Every file indexed into a corpus uses the same model. To switch models, create a new corpus with `--model <spec>` and re-index.
+
+### Model Specs
+
 | Spec | Source | Notes |
 |------|--------|-------|
 | `native` (default) | macOS `NLEmbedding` | No download, 512 dims, English only |
-| `hf:<repo-id>` | HuggingFace Hub | Must have `coreml` tag |
-| `local:<path>` | Local `.mlpackage` | |
+| `hf:<repo-id>` | HuggingFace Hub | Must have `coreml` tag; downloaded on first use |
+| `local:<path>` | Local `.mlpackage` or `.mlmodel` | Path is resolved at index time |
+
+### Choosing a Model
+
+- **`native`** — good for quick setup and prototyping. Uses word averaging, so semantically different sentences can score similarly. No download required.
+- **`hf:` models** — better retrieval quality. Run on the Apple Neural Engine. Recommended when retrieval accuracy matters.
+
+Popular CoreML models on HuggingFace:
+
+| Repo ID | Dims | Size | Notes |
+|---------|------|------|-------|
+| `BAAI/bge-small-en-v1.5-coreml` | 384 | ~25MB | Good balance of speed and quality |
+| `BAAI/bge-large-en-v1.5-coreml` | 1024 | ~130MB | Higher quality, slower |
+| `sentence-transformers/all-MiniLM-L6-v2-coreml` | 384 | ~25MB | General-purpose, fast |
+
+To find more, search HuggingFace with the `coreml` tag: `https://huggingface.co/models?library=coreml`.
+
+### HuggingFace Models
+
+ragmac verifies the model has a `coreml` tag before downloading. Models without this tag are rejected — not all transformer models convert cleanly to CoreML.
+
+On first use, the model is downloaded to `~/.ragmac/models/<repo-id>/`. Subsequent uses of the same repo ID use the cached copy.
 
 ```bash
-# Use a HuggingFace CoreML model
-ragmac corpus create bge --model hf:BAAI/bge-small-en-v1.5-coreml
+# Create a corpus with a HuggingFace CoreML model
+ragmac corpus create bgedocs --model hf:BAAI/bge-small-en-v1.5-coreml --description "BGE-indexed docs"
+
+# Index files — same as with native model
+ragmac index add ./docs/ --corpus bgedocs
+
+# Search
+ragmac search "vector similarity" --corpus bgedocs
 ```
+
+The first `corpus create` call downloads the model (~25MB for bge-small). Subsequent calls to any corpus using the same repo ID reuse the cache.
+
+### Local Models
+
+Point to a `.mlpackage` or `.mlmodel` file you already have on disk:
+
+```bash
+ragmac corpus create localdocs --model local:~/models/my-embedder.mlpackage
+```
+
+The path is resolved at corpus create time. If the file moves or is deleted, indexing new files into that corpus will fail.
+
+### Comparing Model Quality
+
+```bash
+# Create two corpora with different models over the same files
+ragmac corpus create native-idx --model native
+ragmac corpus create bge-idx    --model hf:BAAI/bge-small-en-v1.5-coreml
+
+ragmac index add ./docs/ --corpus native-idx
+ragmac index add ./docs/ --corpus bge-idx
+
+# Run the same query against both
+ragmac search "your query" --corpus native-idx
+ragmac search "your query" --corpus bge-idx
+```
+
+Cross-corpus search (`--corpus all`) groups results by corpus when models differ, so you can compare rankings directly.
 
 ## Supported File Types
 
