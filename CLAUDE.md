@@ -118,6 +118,14 @@ When creating a corpus, the embedder MUST be validated before the corpus row is 
 
 This prevents corpora with broken model references.
 
+### Pooling & Padding (last-token models)
+
+CoreML exports pool internally and the pooling op decides the padding contract:
+- **Mean/CLS models** (BERT, MiniLM, BGE): output `[1, seq, dim]` (mean-pooled by `CoreMLEmbedder.meanPool` over the attention mask) or CLS at position 0 → **right padding**, the default.
+- **Last-token models** (Qwen3-Embedding): output `[1, dim]`, pooled by a static `slice[-1]` baked into the model. These require (a) the tokenizer to **append the EOS token** (`<|endoftext|>`) as the final content token, and (b) **left padding** so that EOS sits at the last sequence position. Get either wrong and the model pools a pad slot — embeddings become degraded causal summaries, and verbatim queries can score worse than random words.
+
+`TextTokenizer.paddingSide` encodes this: `BPETokenizer` → `.left` (and it reads the `tokenizer.json` post_processor to append EOS); `BERTTokenizer` → `.right`. `CoreMLEmbedder` pads on the tokenizer's side. Changing a model's tokenization requires reindexing affected corpora.
+
 ### Embedder Protocol
 
 ```swift
