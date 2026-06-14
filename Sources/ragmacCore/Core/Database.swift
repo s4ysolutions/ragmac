@@ -78,6 +78,46 @@ public final class Database: @unchecked Sendable {
                 end_offset INTEGER
             )
             """)
+        try createFTSIndex()
+    }
+
+    /// Creates the BM25 full-text index over chunk text for hybrid (lexical + vector) search.
+    /// This is an external-content FTS5 table mirroring `chunks`, kept in sync by triggers.
+    /// `unicode61` with diacritic folding handles Serbian Latin/Cyrillic and other scripts.
+    private func createFTSIndex() throws {
+        let ftsExisted = ((try? connection.scalar(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='chunks_fts'"
+        )) as? Int64 ?? 0) > 0
+
+        try connection.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                text,
+                content='chunks',
+                content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            )
+            """)
+        // Keep the FTS index in sync with the chunks table.
+        try connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
+                INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
+            END
+            """)
+        try connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+            END
+            """)
+        try connection.execute("""
+            CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE ON chunks BEGIN
+                INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+                INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
+            END
+            """)
+        // Backfill rows that existed before the FTS index was added (one-time migration).
+        if !ftsExisted {
+            try connection.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')")
+        }
     }
 
     // MARK: - Models
@@ -345,6 +385,81 @@ public final class Database: @unchecked Sendable {
             return SearchResult(chunkId: chunkId, text: text, filePath: path,
                                 corpusName: corpusName, position: Int(position), score: score)
         }
+    }
+
+    /// BM25 full-text search over chunk text. Pass `corpusId` to scope to one corpus,
+    /// or `nil` to search every corpus (the FTS index is shared across all corpora).
+    /// `score` holds the negated BM25 rank (larger = better); it is only meaningful for
+    /// ordering within this list and is intended to be fused via RRF, not compared to cosine.
+    public func lexicalSearch(query: String, corpusId: Int64?, topK: Int) throws -> [SearchResult] {
+        let match = Database.ftsMatchQuery(from: query)
+        guard !match.isEmpty else { return [] }
+
+        var sql = """
+            SELECT c.id, bm25(chunks_fts) AS rank, c.text, c.position, f.path, co.name
+            FROM chunks_fts
+            JOIN chunks c ON c.id = chunks_fts.rowid
+            JOIN files f ON f.id = c.file_id
+            JOIN corpora co ON co.id = f.corpus_id
+            WHERE chunks_fts MATCH ?
+            """
+        var bindings: [Binding?] = [match]
+        if let corpusId {
+            sql += " AND f.corpus_id = ?"
+            bindings.append(corpusId)
+        }
+        sql += " ORDER BY rank LIMIT \(topK)"
+
+        return try connection.prepare(sql, bindings).compactMap { row -> SearchResult? in
+            guard let chunkId = row[0] as? Int64,
+                  let rank = row[1] as? Double,
+                  let text = row[2] as? String,
+                  let position = row[3] as? Int64,
+                  let path = row[4] as? String,
+                  let name = row[5] as? String else { return nil }
+            // bm25() returns a negative score (more negative = better); flip for readability.
+            return SearchResult(chunkId: chunkId, text: text, filePath: path,
+                                corpusName: name, position: Int(position), score: Float(-rank))
+        }
+    }
+
+    /// Reciprocal Rank Fusion. Combines ranked result lists by summing `1/(k + rank)` across
+    /// lists (rank is 1-based). Needs no score normalization, so it cleanly merges cosine and
+    /// BM25 rankings. The returned `score` is the RRF score. With a single non-empty list it
+    /// just truncates to `topK`.
+    public static func reciprocalRankFusion(
+        _ lists: [[SearchResult]], topK: Int, k: Double = 60
+    ) -> [SearchResult] {
+        let nonEmpty = lists.filter { !$0.isEmpty }
+        if nonEmpty.isEmpty { return [] }
+        if nonEmpty.count == 1 { return Array(nonEmpty[0].prefix(topK)) }
+
+        var scores: [Int64: Double] = [:]
+        var byId: [Int64: SearchResult] = [:]
+        for list in nonEmpty {
+            for (idx, r) in list.enumerated() {
+                scores[r.chunkId, default: 0] += 1.0 / (k + Double(idx + 1))
+                if byId[r.chunkId] == nil { byId[r.chunkId] = r }
+            }
+        }
+        return scores.sorted { $0.value > $1.value }.prefix(topK).compactMap { id, score in
+            guard let r = byId[id] else { return nil }
+            return SearchResult(chunkId: r.chunkId, text: r.text, filePath: r.filePath,
+                                corpusName: r.corpusName, position: r.position, score: Float(score))
+        }
+    }
+
+    /// Builds a safe FTS5 MATCH expression from a free-text query: splits on non-alphanumeric
+    /// characters (Unicode-aware, so Cyrillic and Serbian Latin survive), quotes each term as a
+    /// string literal, and ORs them together for recall. Returns "" when no usable terms remain.
+    static func ftsMatchQuery(from query: String) -> String {
+        let terms = query
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        guard !terms.isEmpty else { return "" }
+        return terms
+            .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }
+            .joined(separator: " OR ")
     }
 
     // MARK: - Helpers

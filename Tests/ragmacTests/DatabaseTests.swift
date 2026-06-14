@@ -82,4 +82,58 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(fetched?.text, "first chunk")
         XCTAssertEqual(fetched?.position, 0)
     }
+
+    func testLexicalSearchFindsExactTerm() throws {
+        let model = try db.upsertModel(source: .native, identifier: "native", dimensions: 512)
+        let corpus = try db.createCorpus(name: "fts-test", description: nil, modelId: model.id)
+        let file = try db.upsertFile(corpusId: corpus.id, path: "/tmp/fts.txt", mtime: 0, size: 0)
+        _ = try db.insertChunks([
+            ChunkContent(text: "Velika grupa, sve sa Krebom i Gojlom, bila je na okupu.",
+                         position: 0, startOffset: 0, endOffset: 0),
+            ChunkContent(text: "Hari je posmatrao kako pada kiša nad zamkom.",
+                         position: 1, startOffset: 0, endOffset: 0),
+        ], fileId: file.id)
+
+        let hits = try db.lexicalSearch(query: "grupa sa Krebom i Gojlom", corpusId: corpus.id, topK: 5)
+        XCTAssertEqual(hits.first?.position, 0, "exact-phrase chunk should rank first via BM25")
+        XCTAssertEqual(hits.first?.corpusName, "fts-test")
+    }
+
+    func testLexicalSearchMatchesCyrillicAndFoldsDiacritics() throws {
+        let model = try db.upsertModel(source: .native, identifier: "native", dimensions: 512)
+        let corpus = try db.createCorpus(name: "cyr-test", description: nil, modelId: model.id)
+        let file = try db.upsertFile(corpusId: corpus.id, path: "/tmp/cyr.txt", mtime: 0, size: 0)
+        _ = try db.insertChunks([
+            ChunkContent(text: "Mladi čarobnjak uči čaroliju.", position: 0, startOffset: 0, endOffset: 0),
+            ChunkContent(text: "Глагол у футуру означава будућу радњу.", position: 1, startOffset: 0, endOffset: 0),
+        ], fileId: file.id)
+
+        // Cyrillic token matches exactly (no stemming, so use a whole token).
+        XCTAssertEqual(try db.lexicalSearch(query: "футуру", corpusId: corpus.id, topK: 5).first?.position, 1,
+                       "Cyrillic term must match")
+        // Diacritic folding: query without the accent still matches "čarobnjak".
+        XCTAssertEqual(try db.lexicalSearch(query: "carobnjak", corpusId: corpus.id, topK: 5).first?.position, 0,
+                       "diacritic-folded Latin query must match accented text")
+    }
+
+    func testLexicalSearchScopesToCorpus() throws {
+        let model = try db.upsertModel(source: .native, identifier: "native", dimensions: 512)
+        let a = try db.createCorpus(name: "corp-a", description: nil, modelId: model.id)
+        let b = try db.createCorpus(name: "corp-b", description: nil, modelId: model.id)
+        let fa = try db.upsertFile(corpusId: a.id, path: "/tmp/a.txt", mtime: 0, size: 0)
+        let fb = try db.upsertFile(corpusId: b.id, path: "/tmp/b.txt", mtime: 0, size: 0)
+        _ = try db.insertChunks([ChunkContent(text: "yoneda lemma", position: 0, startOffset: 0, endOffset: 0)], fileId: fa.id)
+        _ = try db.insertChunks([ChunkContent(text: "yoneda lemma", position: 0, startOffset: 0, endOffset: 0)], fileId: fb.id)
+
+        XCTAssertEqual(try db.lexicalSearch(query: "yoneda", corpusId: a.id, topK: 5).count, 1)
+        XCTAssertEqual(try db.lexicalSearch(query: "yoneda", corpusId: nil, topK: 5).count, 2,
+                       "nil corpusId searches across all corpora")
+    }
+
+    func testFTSMatchQueryBuilder() {
+        XCTAssertEqual(Database.ftsMatchQuery(from: "grupa sa Gojlom"), "\"grupa\" OR \"sa\" OR \"Gojlom\"")
+        XCTAssertEqual(Database.ftsMatchQuery(from: "  "), "")
+        // Punctuation and quotes are stripped/escaped, never injected into the MATCH syntax.
+        XCTAssertEqual(Database.ftsMatchQuery(from: "a-b, c"), "\"a\" OR \"b\" OR \"c\"")
+    }
 }

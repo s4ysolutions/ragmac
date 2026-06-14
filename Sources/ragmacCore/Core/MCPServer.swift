@@ -70,7 +70,7 @@ public final class MCPServer {
             ],
             [
                 "name": "search",
-                "description": "Semantic search over an indexed corpus. Returns the most relevant text chunks ranked by similarity. Call list_corpora first to identify the best corpus for your query. Each result includes the source file path and chunk position so you can cite it.",
+                "description": "Hybrid search over an indexed corpus: combines semantic (vector) similarity with BM25 keyword matching, so it handles both paraphrased questions and exact terms, names, or rare tokens. Returns the most relevant text chunks. Call list_corpora first to identify the best corpus for your query. Each result includes the source file path and chunk position so you can cite it.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -154,8 +154,14 @@ public final class MCPServer {
             ragmacDir: ragmacDir
         )
 
+        // Hybrid retrieval: fuse vector similarity with BM25 full-text via RRF, matching the
+        // CLI default. Each side fetches a larger candidate pool before fusion.
+        let poolK = max(topK, 50)
         let queryVec = try await embedder.embed(query)
-        let results = try db.search(corpusId: corpus.id, corpusName: corpusName, queryEmbedding: queryVec, topK: topK)
+        let dense = try db.search(corpusId: corpus.id, corpusName: corpusName,
+                                  queryEmbedding: queryVec, topK: poolK)
+        let lexical = try db.lexicalSearch(query: query, corpusId: corpus.id, topK: poolK)
+        let results = Database.reciprocalRankFusion([dense, lexical], topK: topK)
 
         if results.isEmpty { return "No results found." }
 

@@ -65,6 +65,18 @@ CREATE TABLE chunks (
   end_offset INTEGER
 );
 
+-- Shared full-text (BM25) index over all chunk text, for hybrid search.
+-- External-content FTS5 table mirroring `chunks`, kept in sync by AFTER
+-- INSERT/DELETE/UPDATE triggers on `chunks`. One shared table is fine because
+-- FTS5 is dimension-agnostic (unlike vec0); scope to a corpus by joining
+-- chunks→files. Requires the embedded SQLite built with SQLITE_ENABLE_FTS5.
+CREATE VIRTUAL TABLE chunks_fts USING fts5(
+  text,
+  content='chunks',
+  content_rowid='id',
+  tokenize='unicode61 remove_diacritics 2'  -- handles Serbian Latin + Cyrillic
+);
+
 -- Per-corpus virtual table, created dynamically at corpus-create time.
 -- Name format: chunk_embeddings_<corpus_id>
 -- This is REQUIRED because sqlite-vec needs fixed dimensions per table,
@@ -203,6 +215,19 @@ ragmac mcp     (no subcommands, starts stdio server)
 
 Never silently merge across different vector spaces.
 
+### Hybrid Search (BM25 + Vector, default)
+
+`search` runs in one of three modes via `--mode hybrid|dense|lexical` (default `hybrid`):
+- **dense** — vector similarity only (the original behavior).
+- **lexical** — BM25 full-text only, over the `chunks_fts` index. Best for exact terms, rare tokens, names, and any script the embedding model handles poorly (`Kreb`, `футур`, `Yoneda lemma`).
+- **hybrid** — runs both and fuses with **Reciprocal Rank Fusion (RRF)**.
+
+RRF is `score(chunk) = Σ 1/(k + rank_in_list)`, `k = 60`. It needs no score normalization, so it sidesteps mixing cosine similarity with BM25's unbounded scale. Each side fetches `poolK = max(topK, 50)` candidates before fusion. The reported `score` for hybrid results is the RRF score (small, ~0.01–0.05), **not** cosine — don't compare it to dense-mode scores.
+
+Why hybrid is the default: dense embeddings match *meaning*, not strings. A rare token or exact phrase buried in a topically-different chunk can rank far below 500th in pure dense search (this actually happened — see git history). BM25 catches it; RRF blends the two. Note RRF rewards consensus, so a hit found by only one method ranks below hits both methods agree on — use `--mode lexical` when you want pure exact-match ranking.
+
+The lexical query is built by `Database.ftsMatchQuery`: split on non-alphanumerics (Unicode-aware), quote each term as an FTS5 string literal, OR them for recall. This also prevents FTS5 syntax injection from punctuation in the query. The instruction prefix (below) is applied **only** to the dense side; BM25 always uses the raw query.
+
 ### Instruction-Aware Models
 
 Some embedding models (e.g. Qwen3-Embedding) are **asymmetric**: documents are embedded raw, but queries must carry a task instruction prefix or they land in a different region of the vector space and retrieval fails (a verbatim phrase can score worse than a random word).
@@ -274,9 +299,14 @@ User errors get suggestions: "Corpus 'foo' not found. Run `ragmac corpus list` t
 // Package.swift
 dependencies: [
     .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
-    .package(url: "https://github.com/stephencelis/SQLite.swift", from: "0.15.0"),
+    .package(
+        url: "https://github.com/stephencelis/SQLite.swift", from: "0.15.0",
+        traits: ["SQLiteSwiftCSQLite", "FTS5"]  // embedded sqlite3 with load-extension + FTS5
+    ),
 ]
 ```
+
+The `SQLiteSwiftCSQLite` trait links the bundled `CSQLite` (compiled with `SQLITE_ENABLE_LOAD_EXTENSION`, which macOS system libsqlite3 omits) instead of system SQLite — required so sqlite-vec can be loaded at runtime. That bundled build does **not** enable FTS5 by default, so the `FTS5` trait (forwarded by SQLite.swift to CSQLite's `FTS5` trait) is added to get the BM25 full-text index. Without it, `CREATE VIRTUAL TABLE ... USING fts5` fails with `no such module: fts5`.
 
 **sqlite-vec** is NOT a Swift package — it's a C extension loaded at runtime. `VecExtension.swift` downloads the prebuilt dylib from the [sqlite-vec releases](https://github.com/asg017/sqlite-vec/releases) for the current arch (arm64 or x86_64) on first run and caches it. Load via `sqlite3_load_extension`. Detect arch via `#if arch(arm64)`.
 
@@ -304,10 +334,11 @@ Do NOT add any other dependencies without strong justification. Native framework
 In rough priority order:
 1. Write operations over MCP (behind `--allow-write` flag)
 2. Watch mode (`ragmac index watch <path>`)
-3. Hybrid search (BM25 + vector)
-4. Reranking with a cross-encoder
-5. Non-English `NLEmbedding` languages
-6. Encrypted DB option
-7. Sync between machines (export/import corpora)
+3. Reranking with a cross-encoder
+4. Non-English `NLEmbedding` languages
+5. Encrypted DB option
+6. Sync between machines (export/import corpora)
+
+Done: ~~Hybrid search (BM25 + vector)~~ — shipped via FTS5 + RRF (`--mode`, see Search Semantics).
 
 When implementing any of these, update this section and the relevant `## Why` section so future sessions know the reasoning.
