@@ -195,6 +195,23 @@ ragmac mcp     (no subcommands, starts stdio server)
 
 Never silently merge across different vector spaces.
 
+### Instruction-Aware Models
+
+Some embedding models (e.g. Qwen3-Embedding) are **asymmetric**: documents are embedded raw, but queries must carry a task instruction prefix or they land in a different region of the vector space and retrieval fails (a verbatim phrase can score worse than a random word).
+
+`ragmac search` exposes `--query-instruction "<task>"`. When given, the query is wrapped as:
+```
+Instruct: <task>\nQuery: <query>
+```
+before embedding. Documents are NEVER prefixed, so switching this on does **not** require reindexing. Omit the flag for symmetric models (`native`).
+
+Example:
+```
+ragmac search --corpus books --query-instruction "Given a search query, retrieve relevant passages" "grupa sa Krebom i Gojlom"
+```
+
+This is an explicit knob by design — no auto-detection by model identifier (too brittle), and the wrapping format is the Qwen `Instruct:/Query:` template.
+
 ### Result Format
 Each result includes: text, source file path, corpus name, position, score. The score is cosine similarity (0..1).
 

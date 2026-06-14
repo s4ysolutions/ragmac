@@ -13,11 +13,17 @@ public struct SearchCommand: ParsableCommand {
     @Option(name: .long, help: "Corpus name ('all' searches all corpora).") var corpus: String
     @Option(name: .shortAndLong, help: "Number of results.") var topK: Int = 5
     @Option(name: .long, help: "Output format (text|json).") var format: String = "text"
+    @Option(name: .long, help: """
+        Task instruction for instruction-aware embedding models (e.g. Qwen3-Embedding). \
+        The query is wrapped as "Instruct: <task>\\nQuery: <query>" before embedding. \
+        Required for correct retrieval with such models; omit for symmetric models like native.
+        """)
+    var queryInstruction: String?
 
     public init() {}
 
     public mutating func run() throws {
-        let query = self.query
+        let query = SearchCommand.applyInstruction(query, instruction: queryInstruction)
         let corpus = self.corpus
         let topK = self.topK
         let format = self.format
@@ -32,6 +38,15 @@ public struct SearchCommand: ParsableCommand {
                                     format: format, globals: globals)
             }
         }
+    }
+
+    /// Wraps the query in the Qwen-style instruction template when a task is given.
+    /// Instruction-aware models (Qwen3-Embedding, etc.) embed queries asymmetrically:
+    /// documents are embedded raw, but queries must carry a task prefix or they land in
+    /// a different region of the vector space and retrieval fails.
+    static func applyInstruction(_ query: String, instruction: String?) -> String {
+        guard let task = instruction, !task.isEmpty else { return query }
+        return "Instruct: \(task)\nQuery: \(query)"
     }
 }
 
