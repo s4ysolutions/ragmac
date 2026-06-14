@@ -1,13 +1,24 @@
 import Foundation
 
 /// Splits plain text into overlapping chunks suitable for embedding.
-/// Target: 2048 chars per chunk (~512 tokens), 10% overlap (~205 chars).
+/// Chunk size is computed from embedder's maxInputTokens: targetSize = maxTokens * 4 * 0.9.
+/// Overlap is 10% of targetSize.
 public enum Chunker {
-    static let targetSize = 2048
-    static let overlap = 205
+    /// Splits text into chunks with character offsets, sized for the given embedder.
+    /// Chunk size is calculated as: (embedder.maxInputTokens * 4 * 0.9) chars.
+    /// Overlap is 10% of chunk size. Safety margin (0.9) accounts for tokenizer variance.
+    public static func chunk(_ text: String, for embedder: any Embedder) -> [ChunkContent] {
+        let targetSize = (embedder.maxInputTokens * 4 * 9) / 10  // 90% of max
+        let overlap = targetSize / 10  // 10% overlap
+        return chunkWithSize(text, targetSize: targetSize, overlap: overlap)
+    }
 
-    /// Splits text into chunks with character offsets.
+    /// Legacy: splits with hardcoded 2048-char target (for tests/backwards compat).
     public static func chunk(_ text: String) -> [ChunkContent] {
+        chunkWithSize(text, targetSize: 2048, overlap: 205)
+    }
+
+    private static func chunkWithSize(_ text: String, targetSize: Int, overlap: Int) -> [ChunkContent] {
         guard !text.isEmpty else { return [] }
 
         var chunks: [ChunkContent] = []
@@ -20,8 +31,7 @@ public enum Chunker {
             var splitAt = endOffset
 
             if splitAt < totalLength {
-                // Prefer paragraph break
-                splitAt = findSplit(in: text, from: startOffset, near: endOffset, totalLength: totalLength)
+                splitAt = findSplit(in: text, from: startOffset, near: endOffset, totalLength: totalLength, targetSize: targetSize)
             }
 
             let startIdx = text.utf16Index(at: startOffset)
@@ -38,17 +48,14 @@ public enum Chunker {
                 position += 1
             }
 
-            // Once we've covered to the end of the text, we're done.
             if splitAt >= totalLength { break }
-
-            // Next chunk starts with overlap.
             startOffset = splitAt - overlap
         }
 
         return chunks
     }
 
-    private static func findSplit(in text: String, from start: Int, near target: Int, totalLength: Int) -> Int {
+    private static func findSplit(in text: String, from start: Int, near target: Int, totalLength: Int, targetSize: Int) -> Int {
         // Search window: allow looking back up to 20% of chunk size
         let searchStart = max(start + 1, target - targetSize / 5)
 

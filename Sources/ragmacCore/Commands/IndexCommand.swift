@@ -191,7 +191,7 @@ func indexPath(
     }
     try db.connection.run("DELETE FROM chunks WHERE file_id = ?", file.id)
 
-    let chunks = Chunker.chunk(text)
+    let chunks = Chunker.chunk(text, for: embedder)
     if !quiet { fputs("→ Embedding \(chunks.count) chunks ", stderr) }
 
     let embeddings = try await embedChunks(chunks, embedder: embedder, quiet: quiet)

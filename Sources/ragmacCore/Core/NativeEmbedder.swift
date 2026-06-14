@@ -6,6 +6,7 @@ public final class NativeEmbedder: Embedder, @unchecked Sendable {
     public let dimensions: Int
     public let identifier: String = "native"
     public let source: ModelSource = .native
+    public let maxInputTokens: Int = 512
 
     private let embedding: NLEmbedding
 

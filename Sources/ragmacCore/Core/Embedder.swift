@@ -5,6 +5,7 @@ public protocol Embedder: Sendable {
     var dimensions: Int { get }
     var identifier: String { get }
     var source: ModelSource { get }
+    var maxInputTokens: Int { get }
 
     func embed(_ text: String) async throws -> [Float]
     func embedBatch(_ texts: [String]) async throws -> [[Float]]

@@ -5,6 +5,7 @@ public final class HuggingFaceEmbedder: Embedder, @unchecked Sendable {
     public let dimensions: Int
     public let identifier: String
     public let source: ModelSource = .hf
+    public var maxInputTokens: Int { inner.maxInputTokens }
 
     private let inner: CoreMLEmbedder
 

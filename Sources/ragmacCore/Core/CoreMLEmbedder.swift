@@ -7,6 +7,7 @@ public final class CoreMLEmbedder: Embedder, @unchecked Sendable {
     public let dimensions: Int
     public let identifier: String
     public let source: ModelSource
+    public let maxInputTokens: Int
 
     private let model: MLModel
     private let tokenizer: (any TextTokenizer)?
@@ -86,10 +87,13 @@ public final class CoreMLEmbedder: Embedder, @unchecked Sendable {
             self.requiredSeqLen = nil
         }
 
+        // Set maxInputTokens: use detected sequence length or default to 512
+        self.maxInputTokens = self.requiredSeqLen ?? 512
+
         // Load tokenizer: BPE (tokenizer/tokenizer.json) or BERT (vocab.txt)
         let bpeURL = modelDir.appendingPathComponent("tokenizer").appendingPathComponent("tokenizer.json")
         let vocabURL = modelDir.appendingPathComponent("vocab.txt")
-        let tokMaxLen = self.requiredSeqLen ?? 512
+        let tokMaxLen = self.maxInputTokens
         if fm.fileExists(atPath: bpeURL.path) {
             self.tokenizer = try BPETokenizer(tokenizerDir: modelDir.appendingPathComponent("tokenizer"), maxLength: tokMaxLen)
         } else if fm.fileExists(atPath: vocabURL.path) {
