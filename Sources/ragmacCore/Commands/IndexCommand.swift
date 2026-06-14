@@ -19,12 +19,14 @@ public struct IndexCommand: ParsableCommand {
         @OptionGroup var globals: GlobalOptions
         @Argument(help: "File or directory path.") var path: String
         @Option(name: .long, help: "Target corpus name.") var corpus: String
+        @Option(name: .long, help: "Custom name for indexed entry (default: file path).") var name: String?
         @Option(name: .long, help: "File description (optional).") var description: String?
         @Option(name: .long, help: "Output format (text|json).") var format: String = "text"
 
         mutating func run() throws {
             let path = self.path
             let corpus = self.corpus
+            let name = self.name
             let description = self.description
             let format = self.format
             let globals = self.globals
@@ -39,12 +41,13 @@ public struct IndexCommand: ParsableCommand {
                 let embedder = try await ModelResolver.resolve(modelSpec(from: modelInfo),
                                                                ragmacDir: globals.ragmacDir)
                 let absPath = URL(fileURLWithPath: path).standardizedFileURL.path
-                let count = try await indexPath(absPath, corpusId: corp.id, db: db,
+                let storedName = name ?? absPath
+                let count = try await indexPath(absPath, corpusId: corp.id, storedName: storedName, db: db,
                                                 embedder: embedder, description: description, quiet: globals.quiet)
                 if format == "json" {
-                    print(jsonString(["path": absPath, "chunks": count]))
+                    print(jsonString(["name": storedName, "chunks": count]))
                 } else {
-                    print("✓ Indexed \(absPath) — \(count) chunks")
+                    print("✓ Indexed '\(storedName)' — \(count) chunks")
                 }
             }
         }
@@ -172,9 +175,11 @@ public struct IndexCommand: ParsableCommand {
 
         @OptionGroup var globals: GlobalOptions
         @Option(name: .long, help: "Corpus name.") var corpus: String
+        @Option(name: .long, help: "Specific file to refresh (by stored name). Provide --path to check that file.") var path: String?
 
         mutating func run() throws {
             let corpus = self.corpus
+            let path = self.path
             let globals = self.globals
             try runAsync {
                 let db = try await openDatabase(globals: globals)
@@ -187,25 +192,44 @@ public struct IndexCommand: ParsableCommand {
                 let embedder = try await ModelResolver.resolve(modelSpec(from: modelInfo),
                                                                ragmacDir: globals.ragmacDir)
                 let files = try db.listFiles(corpusId: corp.id)
-                var refreshed = 0
-                var removed = 0
-                for file in files {
-                    let fm = FileManager.default
-                    guard fm.fileExists(atPath: file.path) else {
-                        try db.deleteFile(id: file.id, corpusId: corp.id)
-                        removed += 1
-                        if !globals.quiet { fputs("⚠ Removed missing: \(file.path)\n", stderr) }
-                        continue
+
+                if let specificPath = path {
+                    // Refresh specific file by stored name
+                    guard let file = files.first(where: { $0.path == specificPath }) else {
+                        throw RagmacError.systemError("No indexed file named '\(specificPath)' in corpus '\(corpus)'")
                     }
-                    let attrs = try fm.attributesOfItem(atPath: file.path)
-                    let currentMtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-                    guard currentMtime > file.mtime else { continue }
-                    if !globals.quiet { fputs("→ Re-indexing \(file.path)\n", stderr) }
-                    _ = try await indexPath(file.path, corpusId: corp.id, db: db,
-                                            embedder: embedder, quiet: globals.quiet)
-                    refreshed += 1
+                    if !globals.quiet { fputs("→ Re-indexing '\(file.path)'...\n", stderr) }
+                    _ = try await indexPath(file.path, corpusId: corp.id, storedName: file.path, db: db,
+                                            embedder: embedder, description: file.description, quiet: globals.quiet)
+                    print("✓ Refreshed '\(file.path)'")
+                } else {
+                    // Refresh all files that exist at their stored paths
+                    var refreshed = 0
+                    var removed = 0
+                    var failed = 0
+                    for file in files {
+                        let fm = FileManager.default
+                        guard fm.fileExists(atPath: file.path) else {
+                            try db.deleteFile(id: file.id, corpusId: corp.id)
+                            removed += 1
+                            if !globals.quiet { fputs("⚠ Removed missing: \(file.path)\n", stderr) }
+                            continue
+                        }
+                        let attrs = try fm.attributesOfItem(atPath: file.path)
+                        let currentMtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+                        guard currentMtime > file.mtime else { continue }
+                        if !globals.quiet { fputs("→ Re-indexing \(file.path)\n", stderr) }
+                        do {
+                            _ = try await indexPath(file.path, corpusId: corp.id, storedName: file.path, db: db,
+                                                    embedder: embedder, description: file.description, quiet: globals.quiet)
+                            refreshed += 1
+                        } catch {
+                            failed += 1
+                            if !globals.quiet { fputs("✗ Failed to re-index \(file.path): \(error)\n", stderr) }
+                        }
+                    }
+                    print("✓ Refresh complete: \(refreshed) updated, \(removed) removed\(failed > 0 ? ", \(failed) failed" : "")")
                 }
-                print("✓ Refresh complete: \(refreshed) updated, \(removed) removed")
             }
         }
     }
@@ -217,6 +241,7 @@ public struct IndexCommand: ParsableCommand {
 func indexPath(
     _ absPath: String,
     corpusId: Int64,
+    storedName: String? = nil,
     db: Database,
     embedder: any Embedder,
     description: String? = nil,
@@ -239,7 +264,8 @@ func indexPath(
     let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
     let size = (attrs[.size] as? Int64) ?? 0
 
-    let file = try db.upsertFile(corpusId: corpusId, path: absPath, description: description, mtime: mtime, size: size)
+    let pathToStore = storedName ?? absPath
+    let file = try db.upsertFile(corpusId: corpusId, path: pathToStore, description: description, mtime: mtime, size: size)
 
     let oldIds = try db.connection.prepare(
         "SELECT id FROM chunks WHERE file_id = ?", file.id
