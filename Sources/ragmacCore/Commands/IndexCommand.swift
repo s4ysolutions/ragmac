@@ -19,11 +19,13 @@ public struct IndexCommand: ParsableCommand {
         @OptionGroup var globals: GlobalOptions
         @Argument(help: "File or directory path.") var path: String
         @Option(name: .long, help: "Target corpus name.") var corpus: String
+        @Option(name: .long, help: "File description (optional).") var description: String?
         @Option(name: .long, help: "Output format (text|json).") var format: String = "text"
 
         mutating func run() throws {
             let path = self.path
             let corpus = self.corpus
+            let description = self.description
             let format = self.format
             let globals = self.globals
             try runAsync {
@@ -38,7 +40,7 @@ public struct IndexCommand: ParsableCommand {
                                                                ragmacDir: globals.ragmacDir)
                 let absPath = URL(fileURLWithPath: path).standardizedFileURL.path
                 let count = try await indexPath(absPath, corpusId: corp.id, db: db,
-                                                embedder: embedder, quiet: globals.quiet)
+                                                embedder: embedder, description: description, quiet: globals.quiet)
                 if format == "json" {
                     print(jsonString(["path": absPath, "chunks": count]))
                 } else {
@@ -81,17 +83,23 @@ public struct IndexCommand: ParsableCommand {
 
     struct Rename: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "rename",
-                                                        abstract: "Rename an indexed file's path reference.")
+                                                        abstract: "Rename an indexed file or change its description.")
 
         @OptionGroup var globals: GlobalOptions
         @Option(name: .long, help: "Corpus name.") var corpus: String
         @Option(name: .long, help: "Current file path.") var path: String
-        @Option(name: .long, help: "New file path.") var newPath: String
+        @Option(name: .long, help: "New file path.") var newPath: String?
+        @Option(name: .long, help: "New description.") var description: String?
 
         mutating func run() throws {
+            guard newPath != nil || description != nil else {
+                throw RagmacError.systemError("Specify at least --new-path or --description")
+            }
+
             let corpus = self.corpus
             let path = self.path
             let newPath = self.newPath
+            let description = self.description
             let globals = self.globals
             try runAsync {
                 let db = try await openDatabase(globals: globals)
@@ -99,12 +107,26 @@ public struct IndexCommand: ParsableCommand {
                     throw RagmacError.corpusNotFound(corpus)
                 }
                 let absPath = URL(fileURLWithPath: path).standardizedFileURL.path
-                let absNewPath = URL(fileURLWithPath: newPath).standardizedFileURL.path
                 guard let file = try db.fetchFile(corpusId: corp.id, path: absPath) else {
                     throw RagmacError.systemError("File '\(path)' is not indexed in corpus '\(corpus)'.")
                 }
-                try db.connection.run("UPDATE files SET path = ? WHERE id = ?", absNewPath, file.id)
-                print("✓ Renamed '\(path)' → '\(newPath)'")
+
+                if let newPath = newPath {
+                    let absNewPath = URL(fileURLWithPath: newPath).standardizedFileURL.path
+                    try db.connection.run("UPDATE files SET path = ? WHERE id = ?", absNewPath, file.id)
+                }
+                if let description = description {
+                    try db.connection.run("UPDATE files SET description = ? WHERE id = ?", description, file.id)
+                }
+
+                var changes: [String] = []
+                if let newPath = newPath {
+                    changes.append("path '\(path)' → '\(newPath)'")
+                }
+                if let description = description {
+                    changes.append("description → '\(description)'")
+                }
+                print("✓ Updated file '\(path)': \(changes.joined(separator: ", "))")
             }
         }
     }
@@ -130,10 +152,13 @@ public struct IndexCommand: ParsableCommand {
                 let files = try db.listFiles(corpusId: corp.id)
                 if files.isEmpty { print("No files indexed in '\(corpus)'."); return }
                 if format == "json" {
-                    let out = files.map { ["path": $0.path, "chunks": $0.chunkCount] }
+                    let out = files.map { ["path": $0.path, "description": $0.description as Any, "chunks": $0.chunkCount] }
                     print(jsonString(out))
                 } else {
-                    for f in files { print("• \(f.path) (\(f.chunkCount) chunks)") }
+                    for f in files {
+                        let desc = f.description.map { " — \($0)" } ?? ""
+                        print("• \(f.path)\(desc) (\(f.chunkCount) chunks)")
+                    }
                 }
             }
         }
@@ -194,6 +219,7 @@ func indexPath(
     corpusId: Int64,
     db: Database,
     embedder: any Embedder,
+    description: String? = nil,
     quiet: Bool
 ) async throws -> Int {
     let result = try Converter.convertAll(path: absPath)
@@ -213,7 +239,7 @@ func indexPath(
     let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
     let size = (attrs[.size] as? Int64) ?? 0
 
-    let file = try db.upsertFile(corpusId: corpusId, path: absPath, mtime: mtime, size: size)
+    let file = try db.upsertFile(corpusId: corpusId, path: absPath, description: description, mtime: mtime, size: size)
 
     let oldIds = try db.connection.prepare(
         "SELECT id FROM chunks WHERE file_id = ?", file.id

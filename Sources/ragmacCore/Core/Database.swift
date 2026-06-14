@@ -53,6 +53,7 @@ public final class Database: @unchecked Sendable {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 corpus_id INTEGER NOT NULL REFERENCES corpora(id) ON DELETE CASCADE,
                 path TEXT NOT NULL,
+                description TEXT,
                 mtime REAL NOT NULL,
                 size INTEGER NOT NULL,
                 chunk_count INTEGER DEFAULT 0,
@@ -60,6 +61,13 @@ public final class Database: @unchecked Sendable {
                 UNIQUE(corpus_id, path)
             )
             """)
+        // Migrate: add description column if it doesn't exist
+        let hasDescription = (try? connection.prepare("PRAGMA table_info(files)")
+            .compactMap { row in row[1] as? String }
+            .contains("description")) ?? false
+        if !hasDescription {
+            try connection.execute("ALTER TABLE files ADD COLUMN description TEXT")
+        }
         try connection.execute("""
             CREATE TABLE IF NOT EXISTS chunks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,10 +198,10 @@ public final class Database: @unchecked Sendable {
 
     // MARK: - Files
 
-    public func upsertFile(corpusId: Int64, path: String, mtime: Double, size: Int64) throws -> IndexedFile {
+    public func upsertFile(corpusId: Int64, path: String, description: String? = nil, mtime: Double, size: Int64) throws -> IndexedFile {
         try connection.run(
-            "INSERT OR REPLACE INTO files (corpus_id, path, mtime, size) VALUES (?, ?, ?, ?)",
-            corpusId, path, mtime, size
+            "INSERT OR REPLACE INTO files (corpus_id, path, description, mtime, size) VALUES (?, ?, ?, ?, ?)",
+            corpusId, path, description, mtime, size
         )
         let id = connection.lastInsertRowid
         return try fetchFile(id: id)!
@@ -201,14 +209,14 @@ public final class Database: @unchecked Sendable {
 
     public func fetchFile(id: Int64) throws -> IndexedFile? {
         guard let row = try connection.prepare(
-            "SELECT id, corpus_id, path, mtime, size, chunk_count, indexed_at FROM files WHERE id = ?", id
+            "SELECT id, corpus_id, path, description, mtime, size, chunk_count, indexed_at FROM files WHERE id = ?", id
         ).makeIterator().next() else { return nil }
         return rowToFile(row)
     }
 
     public func fetchFile(corpusId: Int64, path: String) throws -> IndexedFile? {
         guard let row = try connection.prepare(
-            "SELECT id, corpus_id, path, mtime, size, chunk_count, indexed_at FROM files WHERE corpus_id = ? AND path = ?",
+            "SELECT id, corpus_id, path, description, mtime, size, chunk_count, indexed_at FROM files WHERE corpus_id = ? AND path = ?",
             corpusId, path
         ).makeIterator().next() else { return nil }
         return rowToFile(row)
@@ -216,7 +224,7 @@ public final class Database: @unchecked Sendable {
 
     public func listFiles(corpusId: Int64) throws -> [IndexedFile] {
         try connection.prepare(
-            "SELECT id, corpus_id, path, mtime, size, chunk_count, indexed_at FROM files WHERE corpus_id = ? ORDER BY path",
+            "SELECT id, corpus_id, path, description, mtime, size, chunk_count, indexed_at FROM files WHERE corpus_id = ? ORDER BY path",
             corpusId
         ).compactMap { rowToFile($0) }
     }
@@ -240,11 +248,12 @@ public final class Database: @unchecked Sendable {
         guard let id = row[0] as? Int64,
               let corpusId = row[1] as? Int64,
               let path = row[2] as? String,
-              let mtime = row[3] as? Double,
-              let size = row[4] as? Int64,
-              let chunkCount = row[5] as? Int64 else { return nil }
-        let dateStr = row[6] as? String ?? ""
-        return IndexedFile(id: id, corpusId: corpusId, path: path, mtime: mtime, size: size,
+              let mtime = row[4] as? Double,
+              let size = row[5] as? Int64,
+              let chunkCount = row[6] as? Int64 else { return nil }
+        let description = row[3] as? String
+        let dateStr = row[7] as? String ?? ""
+        return IndexedFile(id: id, corpusId: corpusId, path: path, description: description, mtime: mtime, size: size,
                            chunkCount: Int(chunkCount), indexedAt: sqliteDate(from: dateStr))
     }
 
