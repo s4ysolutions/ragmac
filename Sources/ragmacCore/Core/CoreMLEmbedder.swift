@@ -126,12 +126,21 @@ public final class CoreMLEmbedder: Embedder, @unchecked Sendable {
 
         var (inputIds, attentionMask) = tokenizer.encode(text)
 
-        // Pad to fixed sequence length if the model requires it
+        // Pad to fixed sequence length if the model requires it.
+        // Padding side matters: last-token-pooling models (Qwen3) pad left so the final
+        // content token sits at the last position; mean/CLS models pad right.
         if let seqLen = requiredSeqLen {
             if inputIds.count < seqLen {
                 let pad = seqLen - inputIds.count
-                inputIds += [Int32](repeating: 0, count: pad)
-                attentionMask += [Int32](repeating: 0, count: pad)
+                let padIds = [Int32](repeating: 0, count: pad)
+                let padMask = [Int32](repeating: 0, count: pad)
+                if tokenizer.paddingSide == .left {
+                    inputIds = padIds + inputIds
+                    attentionMask = padMask + attentionMask
+                } else {
+                    inputIds += padIds
+                    attentionMask += padMask
+                }
             } else {
                 inputIds = Array(inputIds.prefix(seqLen))
                 attentionMask = Array(attentionMask.prefix(seqLen))

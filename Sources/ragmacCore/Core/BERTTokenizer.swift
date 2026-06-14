@@ -1,8 +1,20 @@
 import Foundation
 
+/// Side on which a tokenizer's output is padded to a fixed sequence length.
+public enum PaddingSide: Sendable { case left, right }
+
 /// Common interface for tokenizers used by CoreMLEmbedder.
 public protocol TextTokenizer: Sendable {
     func encode(_ text: String) -> (inputIds: [Int32], attentionMask: [Int32])
+    /// Which side to add padding tokens on. Last-token-pooling models (e.g. Qwen3)
+    /// require `.left` so the final content token lands at the last sequence position;
+    /// CLS/mean-pooling BERT models use `.right`.
+    var paddingSide: PaddingSide { get }
+}
+
+public extension TextTokenizer {
+    /// BERT/WordPiece tokenizers and mean-pooling models pad on the right by default.
+    var paddingSide: PaddingSide { .right }
 }
 
 /// Minimal BERT WordPiece tokenizer for CoreML embedding models.

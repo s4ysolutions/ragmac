@@ -8,12 +8,22 @@ public final class BPETokenizer: TextTokenizer, @unchecked Sendable {
     private let byteToUnicode: [UInt8: String]
     public let maxLength: Int
 
+    /// Special-token ids the post-processor adds before/after the content tokens
+    /// (e.g. Qwen3 appends `<|endoftext|>`). Resolved from tokenizer.json.
+    private let prependIds: [Int32]
+    private let appendIds: [Int32]
+
+    /// Byte-level BPE models here are last-token-pooling (Qwen3-style), so pad on the left.
+    public let paddingSide: PaddingSide = .left
+
     public init(tokenizerDir: URL, maxLength: Int = 512) throws {
         self.maxLength = maxLength
 
         let url = tokenizerDir.appendingPathComponent("tokenizer.json")
         let data = try Data(contentsOf: url)
         let json = try JSONDecoder().decode(TokenizerJSONFile.self, from: data)
+
+        (self.prependIds, self.appendIds) = BPETokenizer.parsePostProcessor(data: data)
 
         guard json.model.type.lowercased() == "bpe" else {
             throw RagmacError.modelLoadFailed(reason: "Expected BPE tokenizer, got \(json.model.type)")
@@ -31,6 +41,9 @@ public final class BPETokenizer: TextTokenizer, @unchecked Sendable {
     }
 
     public func encode(_ text: String) -> (inputIds: [Int32], attentionMask: [Int32]) {
+        // Reserve room for the special tokens the post-processor will add (e.g. EOS),
+        // so they are never dropped by truncation.
+        let budget = max(0, maxLength - prependIds.count - appendIds.count)
         var ids: [Int32] = []
         for segment in splitWithPattern(text) {
             let unicodeStr = segment.utf8.map { byteToUnicode[$0] ?? "\u{FFFD}" }.joined()
@@ -39,10 +52,11 @@ public final class BPETokenizer: TextTokenizer, @unchecked Sendable {
                     ids.append(id)
                 }
             }
-            if ids.count >= maxLength { break }
+            if ids.count >= budget { break }
         }
-        let truncated = Array(ids.prefix(maxLength))
-        return (truncated, [Int32](repeating: 1, count: truncated.count))
+        let content = Array(ids.prefix(budget))
+        let final = prependIds + content + appendIds
+        return (final, [Int32](repeating: 1, count: final.count))
     }
 
     // MARK: - BPE
@@ -102,6 +116,49 @@ public final class BPETokenizer: TextTokenizer, @unchecked Sendable {
         let ns = text as NSString
         let range = NSRange(location: 0, length: ns.length)
         return BPETokenizer.pattern.matches(in: text, range: range).map { ns.substring(with: $0.range) }
+    }
+
+    // MARK: - Post-processor (special tokens added around content)
+
+    /// Reads the tokenizer.json `post_processor` and returns the special-token ids to
+    /// prepend and append to the content tokens. Handles a `TemplateProcessing` node,
+    /// including one nested inside a `Sequence` of processors. Tokens listed before the
+    /// content sequence ("A") are prepended; tokens after are appended. Returns empty
+    /// lists when there is no post-processor (so non-templated BPE models are unaffected).
+    private static func parsePostProcessor(data: Data) -> (prepend: [Int32], append: [Int32]) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pp = root["post_processor"] as? [String: Any] else { return ([], []) }
+
+        func findTemplate(_ node: [String: Any]) -> [String: Any]? {
+            if (node["type"] as? String) == "TemplateProcessing" { return node }
+            if let procs = node["processors"] as? [[String: Any]] {
+                for p in procs { if let t = findTemplate(p) { return t } }
+            }
+            return nil
+        }
+
+        guard let tmpl = findTemplate(pp),
+              let single = tmpl["single"] as? [[String: Any]] else { return ([], []) }
+        let specials = tmpl["special_tokens"] as? [String: Any] ?? [:]
+
+        func ids(for name: String) -> [Int32] {
+            guard let entry = specials[name] as? [String: Any],
+                  let arr = entry["ids"] as? [Any] else { return [] }
+            return arr.compactMap { ($0 as? NSNumber).map { Int32(truncating: $0) } }
+        }
+
+        var prepend: [Int32] = []
+        var append: [Int32] = []
+        var seenContent = false
+        for item in single {
+            if item["Sequence"] != nil {
+                seenContent = true
+            } else if let st = item["SpecialToken"] as? [String: Any],
+                      let name = st["id"] as? String {
+                if seenContent { append += ids(for: name) } else { prepend += ids(for: name) }
+            }
+        }
+        return (prepend, append)
     }
 }
 
