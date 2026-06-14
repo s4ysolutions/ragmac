@@ -215,16 +215,20 @@ ragmac mcp     (no subcommands, starts stdio server)
 
 Never silently merge across different vector spaces.
 
-### Hybrid Search (BM25 + Vector, default)
+### Search Modes (dense default; hybrid / lexical opt-in)
 
-`search` runs in one of three modes via `--mode hybrid|dense|lexical` (default `hybrid`):
-- **dense** — vector similarity only (the original behavior).
+`search` runs in one of three modes via `--mode dense|hybrid|lexical` (default `dense`):
+- **dense** — vector similarity only. The default.
 - **lexical** — BM25 full-text only, over the `chunks_fts` index. Best for exact terms, rare tokens, names, and any script the embedding model handles poorly (`Kreb`, `футур`, `Yoneda lemma`).
 - **hybrid** — runs both and fuses with **Reciprocal Rank Fusion (RRF)**.
 
 RRF is `score(chunk) = Σ 1/(k + rank_in_list)`, `k = 60`. It needs no score normalization, so it sidesteps mixing cosine similarity with BM25's unbounded scale. Each side fetches `poolK = max(topK, 50)` candidates before fusion. The reported `score` for hybrid results is the RRF score (small, ~0.01–0.05), **not** cosine — don't compare it to dense-mode scores.
 
-Why hybrid is the default: dense embeddings match *meaning*, not strings. A rare token or exact phrase buried in a topically-different chunk can rank far below 500th in pure dense search (this actually happened — see git history). BM25 catches it; RRF blends the two. Note RRF rewards consensus, so a hit found by only one method ranks below hits both methods agree on — use `--mode lexical` when you want pure exact-match ranking.
+Why dense is the default: ragmac is a semantic RAG tool and most queries are natural-language questions, where dense embeddings match *meaning* and win. Hybrid's RRF **rewards consensus**, so a chunk that both methods rank decently beats a chunk only one method found — that dilutes a good dense hit when the lexical side latches onto common or repeated tokens (e.g. a query "hary poter se uplašio" on a good CoreML corpus: lexical floods on the name "Poter" + stopword "se" and RRF promotes a name-dense chunk over the semantically-correct "scared" chunk). Hybrid was the default before but caused exactly this regression.
+
+When to reach for the other modes:
+- **lexical** — exact-term / rare-token / wrong-script queries that dense buries. A rare token or exact phrase in a topically-different chunk can rank far below 500th in pure dense search (this happened — see git history). BM25 finds it. Also the right call when dense quality is poor (e.g. `native` NLEmbedding, which word-averages).
+- **hybrid** — when you want both signals blended and accept the consensus tradeoff.
 
 The lexical query is built by `Database.ftsMatchQuery`: split on non-alphanumerics (Unicode-aware), quote each term as an FTS5 string literal, OR them for recall. This also prevents FTS5 syntax injection from punctuation in the query. The instruction prefix (below) is applied **only** to the dense side; BM25 always uses the raw query.
 

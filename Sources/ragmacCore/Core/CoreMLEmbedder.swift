@@ -103,16 +103,18 @@ public final class CoreMLEmbedder: Embedder, @unchecked Sendable {
         }
     }
 
-    /// Searches `dir` then its direct subdirectories (non-bundle) for a CoreML model.
+    /// Recursively searches `dir` for a CoreML model, at any depth. HF repos nest the
+    /// model arbitrarily deep (e.g. `coreml/feature-extraction/foo.mlpackage`). A matched
+    /// `.mlpackage`/`.mlmodelc` is itself a directory bundle, so we return it as the hit
+    /// and never descend into it.
     private static func findModelURL(in dir: URL, fm: FileManager) -> URL? {
         let modelExts = ["mlpackage", "mlmodel", "mlmodelc"]
-        let top = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        if let found = top.first(where: { modelExts.contains($0.pathExtension) }) { return found }
-        for sub in top where !modelExts.contains(sub.pathExtension) {
+        let entries = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        if let found = entries.first(where: { modelExts.contains($0.pathExtension) }) { return found }
+        for sub in entries {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: sub.path, isDirectory: &isDir), isDir.boolValue else { continue }
-            let subContents = (try? fm.contentsOfDirectory(at: sub, includingPropertiesForKeys: nil)) ?? []
-            if let found = subContents.first(where: { modelExts.contains($0.pathExtension) }) { return found }
+            if let found = findModelURL(in: sub, fm: fm) { return found }
         }
         return nil
     }

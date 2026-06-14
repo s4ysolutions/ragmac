@@ -3,8 +3,8 @@ import Foundation
 
 /// How a search query is matched against the corpus.
 enum SearchMode: String, ExpressibleByArgument {
-    case hybrid   // dense + BM25, fused with RRF (default)
-    case dense    // vector similarity only
+    case dense    // vector similarity only (default)
+    case hybrid   // dense + BM25, fused with RRF
     case lexical  // BM25 full-text only
 }
 
@@ -20,8 +20,8 @@ public struct SearchCommand: ParsableCommand {
     @Option(name: .long, help: "Corpus name ('all' searches all corpora).") var corpus: String
     @Option(name: .shortAndLong, help: "Number of results.") var topK: Int = 5
     @Option(name: .long, help: "Output format (text|json).") var format: String = "text"
-    @Option(name: .long, help: "Retrieval mode (hybrid|dense|lexical). Hybrid fuses vector + BM25 via RRF.")
-    var mode: SearchMode = .hybrid
+    @Option(name: .long, help: "Retrieval mode (dense|hybrid|lexical). Dense is vector-only; hybrid fuses vector + BM25 via RRF.")
+    var mode: SearchMode = .dense
     @Option(name: .long, help: """
         Task instruction for instruction-aware embedding models (e.g. Qwen3-Embedding). \
         The query is wrapped as "Instruct: <task>\\nQuery: <query>" before embedding. \
