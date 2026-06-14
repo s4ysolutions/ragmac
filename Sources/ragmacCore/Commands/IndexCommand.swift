@@ -6,7 +6,7 @@ public struct IndexCommand: ParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "index",
         abstract: "Manage indexed documents.",
-        subcommands: [Add.self, Remove.self, List.self, Refresh.self]
+        subcommands: [Add.self, Remove.self, Rename.self, List.self, Refresh.self]
     )
 
     public init() {}
@@ -73,6 +73,38 @@ public struct IndexCommand: ParsableCommand {
                 }
                 try db.deleteFile(id: file.id, corpusId: corp.id)
                 print("✓ Removed \(absPath) from '\(corpus)'")
+            }
+        }
+    }
+
+    // MARK: - Rename
+
+    struct Rename: ParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "rename",
+                                                        abstract: "Rename an indexed file's path reference.")
+
+        @OptionGroup var globals: GlobalOptions
+        @Option(name: .long, help: "Corpus name.") var corpus: String
+        @Option(name: .long, help: "Current file path.") var path: String
+        @Option(name: .long, help: "New file path.") var newPath: String
+
+        mutating func run() throws {
+            let corpus = self.corpus
+            let path = self.path
+            let newPath = self.newPath
+            let globals = self.globals
+            try runAsync {
+                let db = try await openDatabase(globals: globals)
+                guard let corp = try db.fetchCorpus(name: corpus) else {
+                    throw RagmacError.corpusNotFound(corpus)
+                }
+                let absPath = URL(fileURLWithPath: path).standardizedFileURL.path
+                let absNewPath = URL(fileURLWithPath: newPath).standardizedFileURL.path
+                guard let file = try db.fetchFile(corpusId: corp.id, path: absPath) else {
+                    throw RagmacError.systemError("File '\(path)' is not indexed in corpus '\(corpus)'.")
+                }
+                try db.connection.run("UPDATE files SET path = ? WHERE id = ?", absNewPath, file.id)
+                print("✓ Renamed '\(path)' → '\(newPath)'")
             }
         }
     }
