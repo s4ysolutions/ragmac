@@ -33,7 +33,7 @@ public struct RootCommand: ParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "ragmac",
         abstract: "Local document indexing and semantic search.",
-        subcommands: [CorpusCommand.self, IndexCommand.self, SearchCommand.self, MCPCommand.self]
+        subcommands: [CorpusCommand.self, ModelCommand.self, IndexCommand.self, SearchCommand.self, MCPCommand.self]
     )
 
     public init() {}
